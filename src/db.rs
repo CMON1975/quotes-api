@@ -134,3 +134,189 @@ pub async fn delete_quote(pool: &SqlitePool, id: i64) -> Result<bool, sqlx::Erro
 
     Ok(result.rows_affected() > 0)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::result;
+
+    use super::*;
+    use crate::models::{CreateQuoteRequest, UpdateQuoteRequest};
+    use sqlx::{pool, sqlite::SqlitePoolOptions};
+
+    async fn setup_pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .expect("failed to create in-memory pool");
+
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("failed to run migrations");
+
+        pool
+    }
+
+    fn sample_create() -> CreateQuoteRequest {
+        CreateQuoteRequest {
+            text: "Test quote".to_string(),
+            author: "Test Author".to_string(),
+            source: Some("Test Source".to_string()),
+            tags: Some("rust,test".to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn insert_and_get_quote() {
+        let pool = setup_pool().await;
+        let created = insert_quote(&pool, sample_create()).await.unwrap();
+
+        assert_eq!(created.text, "Test quote");
+        assert_eq!(created.author, "Test Author");
+
+        let fetched = get_quote(&pool, created.id).await.unwrap();
+        assert!(fetched.is_some());
+        assert_eq!(fetched.unwrap().id, created.id);
+    }
+
+    #[tokio::test]
+    async fn get_quote_returns_none_for_missing_id() {
+        let pool = setup_pool().await;
+        let result = get_quote(&pool, 9999).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_quotes_returns_all() {
+        let pool = setup_pool().await;
+        insert_quote(&pool, sample_create()).await.unwrap();
+        insert_quote(&pool, sample_create()).await.unwrap();
+
+        let result = list_quotes(&pool, None, None, 1, 10).await.unwrap();
+        assert_eq!(result.total, 2);
+        assert_eq!(result.data.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_quotes_filters_by_author() {
+        let pool = setup_pool().await;
+        insert_quote(&pool, sample_create()).await.unwrap();
+        insert_quote(
+            &pool,
+            CreateQuoteRequest {
+                author: "Other Author".to_string(),
+                ..sample_create()
+            },
+        )
+        .await
+        .unwrap();
+
+        let result = list_quotes(&pool, Some("other author".to_string()), None, 1, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(result.total, 1);
+        assert_eq!(result.data[0].author, "Other Author");
+    }
+
+    #[tokio::test]
+    async fn list_quotes_filters_by_tag() {
+        let pool = setup_pool().await;
+        insert_quote(&pool, sample_create()).await.unwrap();
+        insert_quote(
+            &pool,
+            CreateQuoteRequest {
+                tags: Some("philosophy,life".to_string()),
+                ..sample_create()
+            },
+        )
+        .await
+        .unwrap();
+
+        let result = list_quotes(&pool, None, Some("philosophy".to_string()), 1, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(result.total, 1);
+        assert_eq!(result.data[0].tags, Some("philosophy,life".to_string()));
+    }
+
+    #[tokio::test]
+    async fn list_quotes_paginates_correctly() {
+        let pool = setup_pool().await;
+        for _ in 0..5 {
+            insert_quote(&pool, sample_create()).await.unwrap();
+        }
+
+        let page1 = list_quotes(&pool, None, None, 1, 2).await.unwrap();
+        let page2 = list_quotes(&pool, None, None, 2, 2).await.unwrap();
+        let page3 = list_quotes(&pool, None, None, 3, 2).await.unwrap();
+
+        assert_eq!(page1.data.len(), 2);
+        assert_eq!(page2.data.len(), 2);
+        assert_eq!(page3.data.len(), 1);
+        assert_eq!(page1.total, 5);
+    }
+
+    #[tokio::test]
+    async fn update_quote_patches_fields() {
+        let pool = setup_pool().await;
+        let created = insert_quote(&pool, sample_create()).await.unwrap();
+
+        let updated = update_quote(
+            &pool,
+            created.id,
+            UpdateQuoteRequest {
+                text: Some("Updated text".to_string()),
+                author: None,
+                source: None,
+                tags: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(updated.is_some());
+        let updated = updated.unwrap();
+        assert_eq!(updated.text, "Updated text");
+        assert_eq!(updated.author, "Test Author"); // unchanged
+    }
+
+    #[tokio::test]
+    async fn update_quote_returns_none_for_missing_id() {
+        let pool = setup_pool().await;
+        let result = update_quote(
+            &pool,
+            9999,
+            UpdateQuoteRequest {
+                text: Some("x".to_string()),
+                author: None,
+                source: None,
+                tags: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_quote_removes_record() {
+        let pool = setup_pool().await;
+        let created = insert_quote(&pool, sample_create()).await.unwrap();
+
+        let deleted = delete_quote(&pool, created.id).await.unwrap();
+        assert!(deleted);
+
+        let fetched = get_quote(&pool, created.id).await.unwrap();
+        assert!(fetched.is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_quote_returns_false_for_missing_id() {
+        let pool = setup_pool().await;
+        let result = delete_quote(&pool, 9999).await.unwrap();
+        assert!(!result);
+    }
+}
