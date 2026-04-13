@@ -28,7 +28,7 @@ pub struct UpdateQuoteRequest {
     pub text: Option<String>,
     pub author: Option<String>,
     pub source: Option<String>,
-    pub tage: Option<String>,
+    pub tags: Option<String>,
 }
 
 /// Query paramters for GET /quotes.
