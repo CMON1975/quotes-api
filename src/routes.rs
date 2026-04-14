@@ -19,29 +19,49 @@ pub struct AppState {
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/quotes", axum::routing::get(list_quotes))
-        .route("/quotes/:id", axum::routing::get(get_quote))
+        .route("/quotes/{id}", axum::routing::get(get_quote))
         .route("/quotes", axum::routing::post(create_quote))
-        .route("/quotes/:id", axum::routing::put(update_quote))
-        .route("/quotes/:id", axum::routing::delete(delete_quote))
+        .route("/quotes/{id}", axum::routing::put(update_quote))
+        .route("/quotes/{id}", axum::routing::delete(delete_quote))
         .with_state(state)
 }
 
 fn require_auth(headers: &HeaderMap, api_key: &str) -> Result<(), ApiError> {
-    todo!()
+    let header_value = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(ApiError::Unauthorized)?;
+
+    let token = auth::extract_bearer_token(header_value).ok_or(ApiError::Unauthorized)?;
+
+    if auth::verify_api_key(token, api_key) {
+        Ok(())
+    } else {
+        Err(ApiError::Unauthorized)
+    }
 }
 
 pub async fn list_quotes(
     State(state): State<AppState>,
     Query(params): Query<QuoteQuery>,
 ) -> Result<Response, ApiError> {
-    todo!()
+    let page = params.page.unwrap_or(1).max(1);
+    let per_page = params.per_page.unwrap_or(10).clamp(1, 100);
+
+    let result = db::list_quotes(&state.pool, params.author, params.tag, page, per_page).await?;
+
+    Ok(Json(result).into_response())
 }
 
 pub async fn get_quote(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Response, ApiError> {
-    todo!()
+    let quote = db::get_quote(&state.pool, id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+
+    Ok(Json(quote).into_response())
 }
 
 pub async fn create_quote(
@@ -72,12 +92,11 @@ pub async fn delete_quote(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::Quote;
-    use axum::{http::response, serve};
+    use crate::models::{CreateQuoteRequest, Quote};
     use axum_test::TestServer;
     use sqlx::sqlite::SqlitePoolOptions;
 
-    async fn setup_server() -> TestServer {
+    async fn setup() -> (TestServer, SqlitePool) {
         let pool = SqlitePoolOptions::new()
             .connect("sqlite::memory:")
             .await
@@ -89,36 +108,34 @@ mod tests {
             .expect("failed to run migrations");
 
         let state = AppState {
-            pool,
+            pool: pool.clone(),
             api_key: "testkey".to_string(),
         };
 
         let router = build_router(state);
-        TestServer::new(router).expect("failed to build test server")
+        let server = TestServer::new(router).expect("failed to build test server");
+        (server, pool)
     }
 
-    async fn insert_test_quote(server: &TestServer) -> Quote {
-        server
-            .post("/quotes")
-            .add_header(
-                axum::http::HeaderName::from_static("authorization"),
-                axum::http::HeaderValue::from_static("Bearer testkey"),
-            )
-            .json(&serde_json::json!({
-                "text": "Test quote",
-                "author": "Test Author",
-                "source": "Test Source",
-                "tags": "rust,test"
-            }))
-            .await
-            .json::<Quote>()
+    async fn insert_test_quote(pool: &SqlitePool) -> Quote {
+        db::insert_quote(
+            pool,
+            CreateQuoteRequest {
+                text: "Test quote".to_string(),
+                author: "Test Author".to_string(),
+                source: Some("Test Source".to_string()),
+                tags: Some("rust,test".to_string()),
+            },
+        )
+        .await
+        .expect("failed to insert test quote")
     }
 
     // --- GET /quotes ---
 
     #[tokio::test]
     async fn list_quotes_returns_empty_array() {
-        let server = setup_server().await;
+        let (server, _pool) = setup().await;
         let response = server.get("/quotes").await;
 
         response.assert_status_ok();
@@ -129,8 +146,8 @@ mod tests {
 
     #[tokio::test]
     async fn list_quotes_returns_inserted_quote() {
-        let server = setup_server().await;
-        insert_test_quote(&server).await;
+        let (server, pool) = setup().await;
+        insert_test_quote(&pool).await;
 
         let response = server.get("/quotes").await;
         response.assert_status_ok();
@@ -142,15 +159,14 @@ mod tests {
 
     #[tokio::test]
     async fn list_quotes_filters_by_author() {
-        let server = setup_server().await;
-        insert_test_quote(&server).await;
+        let (server, pool) = setup().await;
+        insert_test_quote(&pool).await;
 
         let response = server
             .get("/quotes")
             .add_query_param("author", "Test Author")
             .await;
         response.assert_status_ok();
-
         let body = response.json::<serde_json::Value>();
         assert_eq!(body["total"], 1);
 
@@ -164,12 +180,11 @@ mod tests {
 
     #[tokio::test]
     async fn list_quotes_filters_by_tag() {
-        let server = setup_server().await;
-        insert_test_quote(&server).await;
+        let (server, pool) = setup().await;
+        insert_test_quote(&pool).await;
 
         let response = server.get("/quotes").add_query_param("tag", "rust").await;
         response.assert_status_ok();
-
         let body = response.json::<serde_json::Value>();
         assert_eq!(body["total"], 1);
 
@@ -180,10 +195,10 @@ mod tests {
 
     #[tokio::test]
     async fn list_quotes_paginates() {
-        let server = setup_server().await;
-        insert_test_quote(&server).await;
-        insert_test_quote(&server).await;
-        insert_test_quote(&server).await;
+        let (server, pool) = setup().await;
+        insert_test_quote(&pool).await;
+        insert_test_quote(&pool).await;
+        insert_test_quote(&pool).await;
 
         let response = server
             .get("/quotes")
@@ -200,10 +215,11 @@ mod tests {
     }
 
     // --- GET /quotes/:id ---
+
     #[tokio::test]
     async fn get_quote_returns_correct_quote() {
-        let server = setup_server().await;
-        let created = insert_test_quote(&server).await;
+        let (server, pool) = setup().await;
+        let created = insert_test_quote(&pool).await;
 
         let response = server.get(&format!("/quotes/{}", created.id)).await;
         response.assert_status_ok();
@@ -215,7 +231,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_quote_returns_404_for_missing_id() {
-        let server = setup_server().await;
+        let (server, _pool) = setup().await;
         let response = server.get("/quotes/9999").await;
         response.assert_status(StatusCode::NOT_FOUND);
     }
