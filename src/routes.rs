@@ -69,7 +69,11 @@ pub async fn create_quote(
     headers: HeaderMap,
     Json(body): Json<CreateQuoteRequest>,
 ) -> Result<Response, ApiError> {
-    todo!()
+    require_auth(&headers, &state.api_key)?;
+
+    let quote = db::insert_quote(&state.pool, body).await?;
+
+    Ok((StatusCode::CREATED, Json(quote)).into_response())
 }
 
 pub async fn update_quote(
@@ -78,7 +82,13 @@ pub async fn update_quote(
     Path(id): Path<i64>,
     Json(body): Json<UpdateQuoteRequest>,
 ) -> Result<Response, ApiError> {
-    todo!()
+    require_auth(&headers, &state.api_key)?;
+
+    let quote = db::update_quote(&state.pool, id, body)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+
+    Ok(Json(quote).into_response())
 }
 
 pub async fn delete_quote(
@@ -86,7 +96,15 @@ pub async fn delete_quote(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<Response, ApiError> {
-    todo!()
+    require_auth(&headers, &state.api_key)?;
+
+    let deleted = db::delete_quote(&state.pool, id).await?;
+
+    if deleted {
+        Ok(StatusCode::NO_CONTENT.into_response())
+    } else {
+        Err(ApiError::NotFound)
+    }
 }
 
 #[cfg(test)]
@@ -234,5 +252,133 @@ mod tests {
         let (server, _pool) = setup().await;
         let response = server.get("/quotes/9999").await;
         response.assert_status(StatusCode::NOT_FOUND);
+    }
+
+    // --- POST /quotes ---
+
+    #[tokio::test]
+    async fn create_quote_returns_201() {
+        let (server, _pool) = setup().await;
+        let response = server
+            .post("/quotes")
+            .add_header(
+                axum::http::HeaderName::from_static("authorization"),
+                axum::http::HeaderValue::from_static("Bearer testkey"),
+            )
+            .json(&serde_json::json!({
+                "text": "Test quote",
+                "author": "Test Author"
+            }))
+            .await;
+
+        response.assert_status(StatusCode::CREATED);
+        let body = response.json::<serde_json::Value>();
+        assert_eq!(body["author"], "Test Author");
+        assert!(body["id"].as_i64().is_some());
+    }
+
+    #[tokio::test]
+    async fn create_quote_rejects_missing_autho() {
+        let (server, _pool) = setup().await;
+        let response = server
+            .post("/quotes")
+            .json(&serde_json::json!({
+                "text": "Test quote",
+                "author": "Test Author"
+            }))
+            .await;
+
+        response.assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    // --- PUT /quotes/{id} ---
+    #[tokio::test]
+    async fn update_quote_returns_200() {
+        let (server, pool) = setup().await;
+        let created = insert_test_quote(&pool).await;
+
+        let response = server
+            .put(&format!("/quotes/{}", created.id))
+            .add_header(
+                axum::http::HeaderName::from_static("authorization"),
+                axum::http::HeaderValue::from_static("Bearer testkey"),
+            )
+            .json(&serde_json::json!({ "text": "Updated text"}))
+            .await;
+
+        response.assert_status_ok();
+        let body = response.json::<serde_json::Value>();
+        assert_eq!(body["text"], "Updated text");
+        assert_eq!(body["author"], "Test Author");
+    }
+
+    #[tokio::test]
+    async fn update_quote_returns_404_for_missing_id() {
+        let (server, _pool) = setup().await;
+        let response = server
+            .put("/quotes/9999")
+            .add_header(
+                axum::http::HeaderName::from_static("authorization"),
+                axum::http::HeaderValue::from_static("Bearer testkey"),
+            )
+            .json(&serde_json::json!({ "text": "Updated text" }))
+            .await;
+
+        response.assert_status(StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn update_quote_rejects_missing_auth() {
+        let (server, pool) = setup().await;
+        let created = insert_test_quote(&pool).await;
+
+        let response = server
+            .put(&format!("/quotes/{}", created.id))
+            .json(&serde_json::json!({ "text": "Updated text" }))
+            .await;
+
+        response.assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    // --- DELETE /quotes/{id}
+
+    #[tokio::test]
+    async fn delete_quote_returns_204() {
+        let (server, pool) = setup().await;
+        let created = insert_test_quote(&pool).await;
+
+        let response = server
+            .delete(&format!("/quotes/{}", created.id))
+            .add_header(
+                axum::http::HeaderName::from_static("authorization"),
+                axum::http::HeaderValue::from_static("Bearer testkey"),
+            )
+            .await;
+
+        response.assert_status(StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn delete_quote_returns_404_for_missing_id() {
+        let (server, _pool) = setup().await;
+        let response = server
+            .delete("/quotes/9999")
+            .add_header(
+                axum::http::HeaderName::from_static("authorization"),
+                axum::http::HeaderValue::from_static("Bearer testkey"),
+            )
+            .await;
+
+        response.assert_status(StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_quote_rejects_missing_auth() {
+        let (server, pool) = setup().await;
+        let created = insert_test_quote(&pool).await;
+
+        let response = server.delete(&format!("/quotes/{}", created.id)).await;
+
+        response.assert_status(StatusCode::UNAUTHORIZED);
     }
 }
