@@ -137,11 +137,9 @@ pub async fn delete_quote(pool: &SqlitePool, id: i64) -> Result<bool, sqlx::Erro
 
 #[cfg(test)]
 mod tests {
-    use std::result;
-
     use super::*;
     use crate::models::{CreateQuoteRequest, UpdateQuoteRequest};
-    use sqlx::{pool, sqlite::SqlitePoolOptions};
+    use sqlx::sqlite::SqlitePoolOptions;
 
     async fn setup_pool() -> SqlitePool {
         let pool = SqlitePoolOptions::new()

@@ -72,40 +72,42 @@ mod tests {
         let config = Config::load();
 
         assert_eq!(config.host, "127.0.0.1");
+    }
 
-        #[test]
-        fn uses_default_port_when_absent() {
-            clear_env();
-            unsafe {
-                env::set_var("DATABASE_URL", "sqlite:test.db");
-                env::set_var("API_KEY", "testkey");
-            }
-
-            let config = Config::load();
-
-            assert_eq!(config.port, 3000)
+    #[test]
+    fn uses_default_port_when_absent() {
+        clear_env();
+        unsafe {
+            env::set_var("DATABASE_URL", "sqlite:test.db");
+            env::set_var("API_KEY", "testkey");
         }
 
-        #[test]
-        #[should_panic(expected = "DATABASE_URL must be set")]
-        fn panics_when_database_url_missing() {
-            clear_env();
-            unsafe {
-                env::set_var("API_KEY", "testkey");
-            }
+        let config = Config::load();
 
-            Config::load();
+        assert_eq!(config.port, 3000)
+    }
+
+    #[test]
+    #[ignore = "requires absence of .env file; run with --ignored in CI"]
+    #[should_panic(expected = "DATABASE_URL must be set")]
+    fn panics_when_database_url_missing() {
+        clear_env();
+        unsafe {
+            env::set_var("API_KEY", "testkey");
         }
 
-        #[test]
-        #[should_panic(expected = "API_KEY must be set")]
-        fn panics_when_api_key_missing() {
-            clear_env();
-            unsafe {
-                env::set_var("DATABASE_URL", "sqlite:test.db");
-            }
+        Config::load();
+    }
 
-            Config::load();
+    #[test]
+    #[ignore = "requires absence of .env file; run with --ignored in CI"]
+    #[should_panic(expected = "API_KEY must be set")]
+    fn panics_when_api_key_missing() {
+        clear_env();
+        unsafe {
+            env::set_var("DATABASE_URL", "sqlite:test.db");
         }
+
+        Config::load();
     }
 }
