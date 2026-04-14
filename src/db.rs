@@ -1,7 +1,7 @@
 use crate::models::{CreateQuoteRequest, PaginatedQuotes, Quote, UpdateQuoteRequest};
 use chrono::DateTime;
 use chrono::Utc;
-use sqlx::{Sqlite, SqlitePool};
+use sqlx::SqlitePool;
 
 pub async fn list_quotes(
     pool: &SqlitePool,

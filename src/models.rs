@@ -1,4 +1,4 @@
-use chrono::{Date, DateTime, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// The canonical quote record as stored in and retrieved from the database.
